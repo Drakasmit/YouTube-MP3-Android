@@ -1,6 +1,7 @@
 package com.drakasmit.youtubemp3
 
 import android.app.Activity
+import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.view.Gravity
@@ -13,11 +14,9 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
-import android.net.Uri
-import dev.ffmpegkit_maintained.ytdlp.DownloadProgressCallback
-import dev.ffmpegkit_maintained.ytdlp.LogCallback
-import dev.ffmpegkit_maintained.ytdlp.YtDlp
-import dev.ffmpegkit_maintained.ytdlp.YtDlpRequest
+import com.yausername.ffmpeg.FFmpeg
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ExecutorService
@@ -39,16 +38,48 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         buildUi()
         startButton.isEnabled = false
-        append("Инициализация движка загрузки...")
+        append("Инициализация yt-dlp и FFmpeg...")
 
         executor.execute {
             try {
-                YtDlp.init(applicationContext)
+                YoutubeDL.getInstance().init(applicationContext)
+                FFmpeg.getInstance().init(applicationContext)
+                append("Движки yt-dlp и FFmpeg инициализированы.")
+
+                try {
+                    append("Проверка обновлений yt-dlp (канал NIGHTLY)...")
+                    when (
+                        YoutubeDL.getInstance().updateYoutubeDL(
+                            applicationContext,
+                            YoutubeDL.UpdateChannel._NIGHTLY
+                        )
+                    ) {
+                        YoutubeDL.UpdateStatus.DONE ->
+                            append("Обновление yt-dlp: DONE")
+                        YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE ->
+                            append("Обновление yt-dlp: ALREADY_UP_TO_DATE")
+                        null ->
+                            append("Обновление yt-dlp: сервер не вернул статус.")
+                    }
+                } catch (updateError: Exception) {
+                    append(
+                        "Не удалось обновить yt-dlp: ${updateError.message ?: updateError.javaClass.simpleName}"
+                    )
+                    append("Продолжаю с уже установленной версией.")
+                }
+
+                val actualVersion = try {
+                    YoutubeDL.getInstance().version(applicationContext)
+                } catch (versionError: Exception) {
+                    append(
+                        "Не удалось определить версию yt-dlp: ${versionError.message ?: versionError.javaClass.simpleName}"
+                    )
+                    null
+                }
+                append("Фактическая версия yt-dlp: ${actualVersion ?: "не определена"}")
+
                 engineReady = true
-                append("Движок загрузки готов.")
-                append("Версия Android-библиотеки yt-dlp: 2.0.2.")
-                append("Фактическая версия скрипта yt-dlp через публичный API этой библиотеки не предоставляется.")
-                append("Встроенное обновление yt-dlp не поддерживается этой библиотекой. Для обновления нужна новая версия зависимости и пересборка APK.")
+                append("Движок готов к загрузке.")
                 runOnUiThread { startButton.isEnabled = true }
             } catch (error: Exception) {
                 append("Ошибка инициализации: ${error.message ?: error.javaClass.simpleName}")
@@ -72,7 +103,7 @@ class MainActivity : Activity() {
         root.addView(title, LinearLayout.LayoutParams(-1, -2))
 
         val hint = TextView(this).apply {
-            text = "Ссылка на видео или плейлист, который ты вправе сохранять"
+            text = "Ссылка на общедоступное видео или плейлист"
             textSize = 14f
             setPadding(0, 24, 0, 8)
         }
@@ -87,10 +118,13 @@ class MainActivity : Activity() {
         val pasteButton = Button(this).apply {
             text = "Вставить из буфера"
             setOnClickListener {
-                val clipboard = getSystemService(CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                val clipboard =
+                    getSystemService(CLIPBOARD_SERVICE) as? android.content.ClipboardManager
                 val clip = clipboard?.primaryClip
                 if (clip != null && clip.itemCount > 0) {
-                    urlInput.setText(clip.getItemAt(0).coerceToText(this@MainActivity)?.toString().orEmpty())
+                    urlInput.setText(
+                        clip.getItemAt(0).coerceToText(this@MainActivity)?.toString().orEmpty()
+                    )
                 }
             }
         }
@@ -112,9 +146,8 @@ class MainActivity : Activity() {
         root.addView(qualitySpinner)
 
         archiveCheck = CheckBox(this).apply {
-            text = "Пропускать уже скачанные видео (пока недоступно)"
-            isChecked = false
-            isEnabled = false
+            text = "Пропускать уже скачанные видео"
+            isChecked = true
         }
         root.addView(archiveCheck)
 
@@ -220,6 +253,7 @@ class MainActivity : Activity() {
 
         val quality = listOf("0", "128K", "192K", "256K", "320K")
             .getOrElse(qualitySpinner.selectedItemPosition) { "0" }
+        val useArchive = archiveCheck.isChecked
 
         startButton.isEnabled = false
         append("\\nЗапуск: $url")
@@ -234,62 +268,55 @@ class MainActivity : Activity() {
                     error("Не удалось создать папку загрузок")
                 }
 
-                val outputTemplate = File(outputDirectory, "%(title)s.%(ext)s").absolutePath
-                val request = YtDlpRequest(normalized.value)
-                    .setOutputTemplate(outputTemplate)
+                val outputTemplate =
+                    File(outputDirectory, "%(title)s.%(ext)s").absolutePath
+                val request = YoutubeDLRequest(normalized.value)
+                    .addOption("-o", outputTemplate)
+                    .addOption("--ignore-errors")
+                    .addOption("--no-overwrites")
+                    .addOption(
+                        if (normalized.isPlaylist) "--yes-playlist" else "--no-playlist"
+                    )
                     .addOption("-x")
                     .addOption("--audio-format", "mp3")
                     .addOption("--audio-quality", quality)
                     .addOption("--newline")
 
-                append("Диагностика запроса:")
-                append("URL: ${normalized.value}")
-                append("Шаблон сохранения: $outputTemplate")
-                append("Опции, переданные в YoutubeDLRequest:")
-                request.getOptions().forEachIndexed { index, option ->
-                    append("  ${index + 1}. $option")
-                }
-                append("Примечание: --download-archive, --ignore-errors, --no-overwrites и явные --yes-playlist/--no-playlist этой Android-обёрткой не поддерживаются и удалены, чтобы не создавать видимость работающих параметров.")
-
-                val logCallback = object : LogCallback {
-                    override fun onLog(level: String, message: String) {
-                        if (message.isNotBlank()) {
-                            append("[yt-dlp/$level] $message")
-                        }
-                    }
+                if (useArchive) {
+                    request.addOption(
+                        "--download-archive",
+                        File(outputDirectory, "downloaded.txt").absolutePath
+                    )
                 }
 
-                val progressCallback = object : DownloadProgressCallback {
-                    override fun onProgressUpdate(
-                        progress: Float,
-                        etaInSeconds: Long,
-                        line: String
-                    ) {
-                        if (line.isNotBlank()) {
-                            append(
-                                String.format(
-                                    Locale.US,
-                                    "%.1f%% | ETA %ds | %s",
-                                    progress,
-                                    etaInSeconds,
-                                    line
-                                )
+                append("Параметры запуска yt-dlp:")
+                request.buildCommand().forEachIndexed { index, argument ->
+                    append("  ${index + 1}. $argument")
+                }
+
+                val response = YoutubeDL.getInstance().execute(request) {
+                        progress, etaInSeconds, line ->
+                    if (line.isNotBlank()) {
+                        append(
+                            String.format(
+                                Locale.US,
+                                "%.1f%% | ETA %ds | %s",
+                                progress,
+                                etaInSeconds,
+                                line
                             )
-                        }
+                        )
                     }
                 }
 
-                val result = YtDlp.executeDebug(
-                    request,
-                    logCallback,
-                    progressCallback
-                )
-
-                if (result.isSuccess) {
+                if (response.exitCode == 0) {
                     append("Готово. Загрузка завершена.")
                 } else {
-                    append("Загрузка завершилась с кодом ошибки: ${result.exitCode}")
-                    append("Полный вывод yt-dlp находится выше в диагностическом журнале, если библиотека его вернула.")
+                    append("yt-dlp завершился с кодом: ${response.exitCode}")
+                    if (response.err.isNotBlank()) {
+                        append("Сообщения об ошибках yt-dlp:")
+                        append(response.err.takeLast(12000))
+                    }
                 }
             } catch (error: Exception) {
                 append("Ошибка загрузки: ${error.message ?: error.javaClass.simpleName}")
