@@ -294,7 +294,7 @@ class MainActivity : Activity() {
                     append("  ${index + 1}. $argument")
                 }
 
-                val response = YoutubeDL.getInstance().execute(request) {
+                val response = YoutubeDL.getInstance().execute(request, null, false) {
                         progress, etaInSeconds, line ->
                     if (line.isNotBlank()) {
                         append(
