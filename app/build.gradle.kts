@@ -11,14 +11,12 @@ android {
         applicationId = "com.drakasmit.youtubemp3"
         minSdk = 24
         targetSdk = 28
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "1.3"
 
         ndk {
-            abiFilters.add("armeabi-v7a")
-            abiFilters.add("arm64-v8a")
-            abiFilters.add("x86")
-            abiFilters.add("x86_64")
+            abiFilters.clear()
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
