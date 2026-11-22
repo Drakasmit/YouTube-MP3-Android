@@ -10,7 +10,7 @@ android {
     defaultConfig {
         applicationId = "com.drakasmit.youtubemp3"
         minSdk = 24
-        targetSdk = 28
+        targetSdk = 35
         versionCode = 4
         versionName = "1.3"
 
