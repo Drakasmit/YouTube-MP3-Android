@@ -81,6 +81,11 @@ class MainActivity : Activity() {
         darkTheme = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         applySystemBars()
         buildUi()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4103)
+        }
         handleIncomingShare(intent)
         startButton.isEnabled = false
         setStatus("Подготовка движка yt-dlp и FFmpeg…")
