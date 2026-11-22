@@ -215,12 +215,27 @@ class MainActivity : Activity() {
         }
 
         if (!playlistId.isNullOrBlank()) {
-            if (playlistId.startsWith("RD") && !videoId.isNullOrBlank()) {
+            val embeddedMixVideoId = if (
+                playlistId.startsWith("RD") && playlistId.length >= 13
+            ) {
+                playlistId.substring(2, 13).takeIf {
+                    it.matches(Regex("[A-Za-z0-9_-]{11}"))
+                }
+            } else {
+                null
+            }
+
+            // RDMM / RDCLAK and other RD-prefixed IDs without an embedded
+            // 11-character video ID remain ordinary playlist URLs.
+            if (embeddedMixVideoId != null) {
+                val mixVideoId = videoId ?: embeddedMixVideoId
+                append("Обнаружен автомикс YouTube (RD): извлечён исходный трек $mixVideoId")
                 return NormalizedUrl(
-                    "https://www.youtube.com/watch?v=$videoId",
+                    "https://www.youtube.com/watch?v=$mixVideoId",
                     false
                 )
             }
+
             return NormalizedUrl(
                 "https://www.youtube.com/playlist?list=$playlistId",
                 true
