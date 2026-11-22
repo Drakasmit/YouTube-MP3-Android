@@ -254,13 +254,30 @@ class MainActivity : Activity() {
         progressCard.addView(openMp3Button, LinearLayout.LayoutParams(-2, dp(40)).apply { topMargin = dp(10) })
         page.addView(progressCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
 
+        val logControls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         logToggle = Button(this).apply {
             text = "Показать технический лог"; isAllCaps = false; textSize = 12f
-            setTextColor(accentColor); background = roundedDrawable(cardColor, dp(10))
+            setTextColor(accentColor); background = roundedDrawable(cardColor, dp(50))
             setOnClickListener { setLogExpanded(logScroll.visibility != View.VISIBLE) }
         }
-        page.addView(logToggle, LinearLayout.LayoutParams(-1, dp(44)))
-        logView = TextView(this).apply { textSize = 11f; setTextColor(secondaryTextColor); setPadding(dp(10), dp(10), dp(10), dp(10)) }
+        logControls.addView(logToggle, LinearLayout.LayoutParams(0, dp(44), 1f))
+        val copyLogButton = smallButton("Скопировать лог").apply {
+            textSize = 11f
+            setTextColor(accentColor)
+            background = roundedDrawable(selectedChipColor, dp(50))
+            setOnClickListener { copyTechnicalLog() }
+        }
+        logControls.addView(copyLogButton, LinearLayout.LayoutParams(-2, dp(40)).apply { leftMargin = dp(8) })
+        page.addView(logControls, matchWrap())
+        logView = TextView(this).apply {
+            textSize = 11f
+            setTextColor(secondaryTextColor)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setTextIsSelectable(true)
+        }
         logScroll = ScrollView(this).apply { visibility = View.GONE; background = roundedDrawable(cardColor, dp(10)); addView(logView) }
         page.addView(logScroll, LinearLayout.LayoutParams(-1, dp(170)).apply { topMargin = dp(6) })
         val root = ScrollView(this).apply {
@@ -319,6 +336,17 @@ class MainActivity : Activity() {
     private fun roundedDrawable(color: Int, radius: Int) = GradientDrawable().apply { setColor(color); cornerRadius = radius.toFloat() }
     private fun matchWrap() = LinearLayout.LayoutParams(-1, -2)
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    private fun copyTechnicalLog() {
+        val logText = logView.text?.toString().orEmpty()
+        if (logText.isEmpty()) {
+            Toast.makeText(this, "Технический лог пуст.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Технический лог", logText))
+        Toast.makeText(this, "Лог скопирован в буфер обмена", Toast.LENGTH_SHORT).show()
+    }
 
     private fun setLogExpanded(expanded: Boolean) {
         if (!::logScroll.isInitialized) return
