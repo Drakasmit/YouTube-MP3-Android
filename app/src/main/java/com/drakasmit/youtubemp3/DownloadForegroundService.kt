@@ -132,7 +132,7 @@ class DownloadForegroundService : Service() {
             val response = YoutubeDL.getInstance().execute(request, PROCESS_ID, false) { progress, eta, line ->
                 if (line.isNotBlank()) {
                     val percent = progress.toInt().coerceIn(0, 100)
-                    val item = Regex("""Downloading item\s+(\\d+)\s+of\s+(\\d+)""", RegexOption.IGNORE_CASE).find(line)
+                    val item = Regex("""Downloading item\s+(\d+)\s+of\s+(\d+)""", RegexOption.IGNORE_CASE).find(line)
                     val trackText = item?.let { "Трек ${it.groupValues[1]} из ${it.groupValues[2]}" }.orEmpty()
                     val stage = when {
                         line.contains("ffmpeg", true) || line.contains("converting", true) || line.contains("ExtractAudio", true) -> "Конвертация в MP3…"
@@ -145,7 +145,7 @@ class DownloadForegroundService : Service() {
                     if (line.contains("[ExtractAudio] Destination:", true)) {
                         pendingFile = File(line.substringAfter("Destination:", "").trim().trim('"'))
                     } else if (line.contains("Deleting original file", true) ||
-                        Regex("""Downloading item\s+\\d+\s+of\s+\\d+""", RegexOption.IGNORE_CASE).containsMatchIn(line)) {
+                        Regex("""Downloading item\s+\d+\s+of\s+\d+""", RegexOption.IGNORE_CASE).containsMatchIn(line)) {
                         saveFile(pendingFile)
                         pendingFile = null
                     }
