@@ -49,6 +49,8 @@ class DownloadForegroundService : Service() {
             val url = intent.getStringExtra(EXTRA_URL).orEmpty()
             val quality = intent.getStringExtra(EXTRA_QUALITY) ?: "0"
             val archive = intent.getBooleanExtra(EXTRA_ARCHIVE, true)
+            val isPlaylist = intent.getBooleanExtra(EXTRA_IS_PLAYLIST, false)
+            val isMix = intent.getBooleanExtra(EXTRA_IS_MIX, false)
             if (url.isBlank()) {
                 DownloadStateManager.log("Ошибка: пустая ссылка.")
                 finishState("Не указана ссылка", true)
@@ -56,12 +58,12 @@ class DownloadForegroundService : Service() {
             }
             stopRequested.set(false)
             DownloadStateManager.update { it.copy(isDownloading = true, progress = 0, status = "Запуск загрузки…", track = "", eta = -1L) }
-            task = executor.submit { runDownload(url, quality, archive) }
+            task = executor.submit { runDownload(url, quality, archive, isPlaylist, isMix) }
         }
         return START_NOT_STICKY
     }
 
-    private fun runDownload(rawUrl: String, quality: String, useArchive: Boolean) {
+    private fun runDownload(rawUrl: String, quality: String, useArchive: Boolean, requestedPlaylist: Boolean, requestedMix: Boolean) {
         var failed = false
         val outputDirectory = File(cacheDir, "YTDWNLD")
         val savedPaths = mutableSetOf<String>()
@@ -82,7 +84,11 @@ class DownloadForegroundService : Service() {
                 log("Обновление yt-dlp пропущено: ${e.message ?: e.javaClass.simpleName}")
             }
 
-            val normalized = normalizeYouTubeUrl(rawUrl)
+            val parsedUrl = normalizeYouTubeUrl(rawUrl)
+            val normalized = parsedUrl.copy(
+                isPlaylist = requestedPlaylist || parsedUrl.isPlaylist,
+                isMix = requestedMix || parsedUrl.isMix
+            )
             log("Запуск: $rawUrl")
             log("Тип ссылки: ${if (normalized.isPlaylist) "плейлист" else "одно видео"}")
             if (outputDirectory.exists()) outputDirectory.deleteRecursively()
@@ -239,6 +245,10 @@ class DownloadForegroundService : Service() {
         stopRequested.set(true)
         runCatching { YoutubeDL.getInstance().destroyProcessById(PROCESS_ID) }
         task?.cancel(true)
+        DownloadStateManager.update { it.copy(isDownloading = false, status = "Загрузка остановлена", eta = -1L) }
+        updateNotification("Загрузка остановлена", DownloadStateManager.snapshot().progress)
+        stopForegroundCompat()
+        stopSelf()
         runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
         wakeLock = null
         DownloadStateManager.log("Запрошена остановка загрузки.")
@@ -304,16 +314,20 @@ class DownloadForegroundService : Service() {
         const val EXTRA_URL = "download_url"
         const val EXTRA_QUALITY = "download_quality"
         const val EXTRA_ARCHIVE = "download_archive"
+        const val EXTRA_IS_PLAYLIST = "download_is_playlist"
+        const val EXTRA_IS_MIX = "download_is_mix"
         private const val CHANNEL_ID = "ytdwnld_download"
         private const val NOTIFICATION_ID = 7314
         private const val PROCESS_ID = "yt_mp3_download"
 
-        fun startDownload(context: Context, url: String, quality: String, archive: Boolean) {
+        fun startDownload(context: Context, url: String, quality: String, archive: Boolean, isPlaylist: Boolean, isMix: Boolean) {
             val intent = Intent(context, DownloadForegroundService::class.java).apply {
                 action = ACTION_START_DOWNLOAD
                 putExtra(EXTRA_URL, url)
                 putExtra(EXTRA_QUALITY, quality)
                 putExtra(EXTRA_ARCHIVE, archive)
+                putExtra(EXTRA_IS_PLAYLIST, isPlaylist)
+                putExtra(EXTRA_IS_MIX, isMix)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
         }
