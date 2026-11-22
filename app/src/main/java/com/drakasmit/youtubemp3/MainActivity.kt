@@ -134,14 +134,79 @@ class MainActivity : Activity() {
         setContentView(root)
     }
 
+
+    private data class NormalizedUrl(
+        val value: String,
+        val isPlaylist: Boolean
+    )
+
+    private fun normalizeYouTubeUrl(raw: String): NormalizedUrl {
+        val uri = android.net.Uri.parse(raw.trim())
+        val host = uri.host?.lowercase(Locale.ROOT)
+            ?: throw IllegalArgumentException("Некорректный адрес ссылки")
+
+        val allowedHosts = setOf(
+            "youtube.com", "www.youtube.com", "m.youtube.com",
+            "music.youtube.com", "youtu.be", "www.youtu.be"
+        )
+        require(host in allowedHosts) {
+            "Поддерживаются только ссылки YouTube"
+        }
+
+        val videoId = if (host.endsWith("youtu.be")) {
+            uri.lastPathSegment
+        } else {
+            uri.getQueryParameter("v")
+        }
+        val playlistId = uri.getQueryParameter("list")
+
+        // Mix-плейлисты RD... генерируются YouTube автоматически.
+        // Не запускаем массовую загрузку Mix: оставляем только исходное видео.
+        if (!playlistId.isNullOrBlank() && playlistId.startsWith("RD")) {
+            val mixVideoId = videoId
+                ?: playlistId.removePrefix("RD").take(11)
+            require(mixVideoId.matches(Regex("[A-Za-z0-9_-]{11}"))) {
+                "Не удалось определить исходное видео из YouTube Mix"
+            }
+            return NormalizedUrl(
+                "https://www.youtube.com/watch?v=$mixVideoId",
+                false
+            )
+        }
+
+        // Явная ссылка на обычный плейлист.
+        if (!playlistId.isNullOrBlank()) {
+            return NormalizedUrl(
+                "https://www.youtube.com/playlist?list=$playlistId",
+                true
+            )
+        }
+
+        require(!videoId.isNullOrBlank() &&
+            videoId.matches(Regex("[A-Za-z0-9_-]{11}"))) {
+            "Не удалось определить ID видео"
+        }
+
+        return NormalizedUrl(
+            "https://www.youtube.com/watch?v=$videoId",
+            false
+        )
+    }
+
     private fun startDownload() {
         val url = urlInput.text.toString().trim()
         if (url.isEmpty()) {
             Toast.makeText(this, "Вставь ссылку.", Toast.LENGTH_SHORT).show()
             return
         }
-        if (!url.startsWith("https://") && !url.startsWith("http://")) {
-            Toast.makeText(this, "Проверь ссылку.", Toast.LENGTH_SHORT).show()
+        val normalized = try {
+            normalizeYouTubeUrl(url)
+        } catch (error: Exception) {
+            Toast.makeText(
+                this,
+                error.message ?: "Некорректная ссылка",
+                Toast.LENGTH_LONG
+            ).show()
             return
         }
         if (!engineReady) {
@@ -165,11 +230,13 @@ class MainActivity : Activity() {
                     error("Не удалось создать папку загрузок")
                 }
 
-                val request = YtDlpRequest(url)
-                    .setOutputTemplate(File(outputDirectory, "%(title)s.%(ext)s").absolutePath)
-                    .addOption("--yes-playlist")
+                val request = YtDlpRequest(normalized.value)
+                    .setOutputTemplate(
+                        File(outputDirectory, "%(title)s.%(ext)s").absolutePath
+                    )
                     .addOption("--ignore-errors")
                     .addOption("--no-overwrites")
+                    .addOption(if (normalized.isPlaylist) "--yes-playlist" else "--no-playlist")
                     .addOption("-x")
                     .addOption("--audio-format", "mp3")
                     .addOption("--audio-quality", quality)
