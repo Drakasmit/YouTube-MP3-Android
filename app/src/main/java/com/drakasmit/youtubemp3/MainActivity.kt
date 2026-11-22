@@ -74,7 +74,7 @@ class MainActivity : Activity() {
 
         urlInput = EditText(this).apply {
             isSingleLine = true
-            hint = "https://www.youtube.com/…"
+            this.hint = "https://www.youtube.com/…"
         }
         root.addView(urlInput, LinearLayout.LayoutParams(-1, -2))
 
