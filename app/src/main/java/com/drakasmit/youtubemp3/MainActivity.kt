@@ -383,27 +383,26 @@ class MainActivity : Activity() {
         }
 
         if (!playlistId.isNullOrBlank()) {
-            val embeddedMixVideoId = if (
-                playlistId.startsWith("RD") && playlistId.length >= 13
-            ) {
-                playlistId.substring(2, 13).takeIf {
-                    it.matches(Regex("[A-Za-z0-9_-]{11}"))
-                }
-            } else {
-                null
-            }
+            val isPersonalRadioMix =
+                playlistId.startsWith("RD") &&
+                playlistId.length == 13 &&
+                !playlistId.startsWith("RDCLAK") &&
+                !playlistId.startsWith("RDMM")
 
-            // RDMM / RDCLAK and other RD-prefixed IDs without an embedded
-            // 11-character video ID remain ordinary playlist URLs.
-            if (embeddedMixVideoId != null) {
-                val mixVideoId = videoId ?: embeddedMixVideoId
-                append("Обнаружен автомикс YouTube (RD): извлечён исходный трек $mixVideoId")
+            if (isPersonalRadioMix) {
+                // Personal radio mix IDs contain the source video ID after the "RD" prefix.
+                val mixVideoId = playlistId.substring(2)
+                require(mixVideoId.matches(Regex("[A-Za-z0-9_-]{11}"))) {
+                    "Некорректный ID видео в автомиксе"
+                }
+                append("Обнаружен персональный автомикс YouTube (RD): загружается исходное видео $mixVideoId")
                 return NormalizedUrl(
                     "https://www.youtube.com/watch?v=$mixVideoId",
                     false
                 )
             }
 
+            // Any other list= parameter represents a playlist, even when v= is also present.
             return NormalizedUrl(
                 "https://www.youtube.com/playlist?list=$playlistId",
                 true
@@ -455,7 +454,7 @@ class MainActivity : Activity() {
             try {
                 if (outputDirectory.exists()) outputDirectory.deleteRecursively()
                 if (!outputDirectory.mkdirs() && !outputDirectory.isDirectory) error("Не удалось создать временную папку загрузки")
-                val outputTemplate = File(outputDirectory, "%(title)s.%(ext)s").absolutePath
+                val outputTemplate = File(outputDirectory, if (normalized.isPlaylist) "%(playlist_index)s - %(title)s.%(ext)s" else "%(title)s.%(ext)s").absolutePath
                 val request = YoutubeDLRequest(normalized.value)
                     .addOption("-o", outputTemplate)
                     .addOption("--ignore-errors")
