@@ -58,6 +58,8 @@ class MainActivity : Activity() {
     private val stopRequested = AtomicBoolean(false)
     private val downloadProcessId = "yt_mp3_download"
     private var downloadActive = false
+    @Volatile
+    private var foregroundServiceWarningLogged = false
 
     private val bgColor get() = Color.parseColor(if (darkTheme) "#131314" else "#F8FAFD")
     private val cardColor get() = Color.parseColor(if (darkTheme) "#1E1F20" else "#FFFFFF")
@@ -459,6 +461,13 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun reportForegroundServiceFailure(error: Exception) {
+        if (!foregroundServiceWarningLogged) {
+            foregroundServiceWarningLogged = true
+            append("Уведомление загрузки недоступно, продолжаю без него: " + (error.message ?: error.javaClass.simpleName))
+        }
+    }
+
     private fun startDownload() {
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
             checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
@@ -488,7 +497,11 @@ class MainActivity : Activity() {
         append("\nЗапуск: " + url)
         append("Тип ссылки: " + if (normalized.isPlaylist) "плейлист" else "одно видео")
 
-        DownloadForegroundService.start(this, "Подготовка загрузки…")
+        try {
+            DownloadForegroundService.start(this, "Подготовка загрузки…")
+        } catch (serviceError: Exception) {
+            reportForegroundServiceFailure(serviceError)
+        }
         activeDownload = executor.submit {
             val outputDirectory = File(cacheDir, "YTDWNLD")
             var failed = false
@@ -552,7 +565,11 @@ class MainActivity : Activity() {
                     if (line.isNotBlank()) {
                         append(String.format(Locale.US, "%.1f%% | ETA %ds | %s", progress, etaInSeconds, line))
                         updateProgress(progress, etaInSeconds.toLong(), line)
-                        DownloadForegroundService.update(this, line.take(110))
+                        try {
+                            DownloadForegroundService.update(this, line.take(110))
+                        } catch (serviceError: Exception) {
+                            reportForegroundServiceFailure(serviceError)
+                        }
                         if (line.contains("[ExtractAudio] Destination:", true)) {
                             val destination = line.substringAfter("Destination:", "").trim().trim('"')
                             if (destination.isNotEmpty()) pendingConvertedFile = File(destination)
