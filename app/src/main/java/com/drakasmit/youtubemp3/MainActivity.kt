@@ -14,6 +14,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.MediaStore
 import android.view.Gravity
 import android.widget.Button
@@ -482,10 +483,19 @@ class MainActivity : Activity() {
         append("\nЗапуск: " + url)
         append("Тип ссылки: " + if (normalized.isPlaylist) "плейлист" else "одно видео")
 
+        DownloadForegroundService.start(this, "Подготовка загрузки…")
         activeDownload = executor.submit {
             val outputDirectory = File(cacheDir, "YTDWNLD")
             var failed = false
+            var wakeLock: PowerManager.WakeLock? = null
+            val publishedUris = mutableListOf<Uri>()
+            var savedCount = 0
+            val savedPaths = mutableSetOf<String>()
             try {
+                val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:YtMp3Download")
+                wakeLock.acquire(60L * 60L * 1000L)
+                append("CPU WakeLock активен (максимум 60 минут).")
                 if (outputDirectory.exists()) outputDirectory.deleteRecursively()
                 if (!outputDirectory.mkdirs() && !outputDirectory.isDirectory) error("Не удалось создать временную папку загрузки")
                 val outputTemplate = File(outputDirectory, if (normalized.isPlaylist) "%(playlist_index)s - %(title)s.%(ext)s" else "%(title)s.%(ext)s").absolutePath
@@ -496,6 +506,7 @@ class MainActivity : Activity() {
                     .addOption(if (normalized.isPlaylist) "--yes-playlist" else "--no-playlist")
                     .addOption("-x").addOption("--audio-format", "mp3")
                     .addOption("--audio-quality", quality).addOption("--newline")
+                    .addOption("--postprocessor-args", "ffmpeg:-threads 4 -loglevel error")
                 if (normalized.isMix) {
                     request.addOption("--playlist-end", "25")
                     append("Загрузка персонального микса YouTube (лимит: 25 треков)...")
@@ -506,42 +517,69 @@ class MainActivity : Activity() {
                 append("Параметры запуска yt-dlp:")
                 request.buildCommand().forEachIndexed { index, argument -> append("  " + (index + 1) + ". " + argument) }
 
+                var pendingConvertedFile: File? = null
+                fun saveCompletedFile(file: File?) {
+                    if (file == null || !file.exists() || !file.isFile ||
+                        !file.extension.equals("mp3", true) ||
+                        file.absolutePath in savedPaths || stopRequested.get()
+                    ) return
+                    try {
+                        val uri = publishMp3(file)
+                        publishedUris.add(uri)
+                        savedPaths.add(file.absolutePath)
+                        savedCount++
+                        file.delete()
+                        append("Сохранён сразу после конвертации ($savedCount): " + file.name)
+                        runOnUiThread {
+                            progressTitle.text = "Сохранено треков: $savedCount"
+                            progressStatus.text = "Файл перенесён в Music/YTDWNLD"
+                            if (!normalized.isPlaylist) {
+                                lastDownloadedUri = uri
+                                openMp3Button.visibility = View.VISIBLE
+                            }
+                        }
+                    } catch (copyError: Exception) {
+                        append("Не удалось сохранить " + file.name + ": " + copyError.message)
+                    }
+                }
+
                 val response = YoutubeDL.getInstance().execute(request, downloadProcessId, false) { progress, etaInSeconds, line ->
                     if (line.isNotBlank()) {
                         append(String.format(Locale.US, "%.1f%% | ETA %ds | %s", progress, etaInSeconds, line))
                         updateProgress(progress, etaInSeconds.toLong(), line)
+                        DownloadForegroundService.update(this, line.take(110))
+                        if (line.contains("[ExtractAudio] Destination:", true)) {
+                            val destination = line.substringAfter("Destination:", "").trim().trim('"')
+                            if (destination.isNotEmpty()) pendingConvertedFile = File(destination)
+                        } else if (line.contains("Deleting original file", true)) {
+                            // yt-dlp emits this only after FFmpeg has completed the extraction.
+                            saveCompletedFile(pendingConvertedFile)
+                            pendingConvertedFile = null
+                        } else if (Regex("""Downloading item\\s+\\d+\\s+of\\s+\\d+""", RegexOption.IGNORE_CASE).containsMatchIn(line)) {
+                            // The next playlist item starts only after the previous post-processing step.
+                            saveCompletedFile(pendingConvertedFile)
+                            pendingConvertedFile = null
+                        }
                     }
                 }
+                saveCompletedFile(pendingConvertedFile)
                 if (stopRequested.get() || Thread.currentThread().isInterrupted) throw InterruptedException("Остановлено пользователем")
 
                 if (response.exitCode == 0) {
-                    val mp3Files = outputDirectory.walkTopDown().filter { it.isFile && it.extension.equals("mp3", true) }.toList()
-                    if (mp3Files.isEmpty()) append("Загрузка завершилась, но MP3-файлы не найдены.")
-                    else {
-                        runOnUiThread {
-                            progressTitle.text = "Сохранение готовых файлов"
-                            progressStatus.text = "Перенос MP3 в Music/YTDWNLD…"
-                            progressBar.progress = 100
-                        }
-                        append("Перенос готовых MP3 в общую папку Music/YTDWNLD...")
-                        var copied = 0
-                        val publishedUris = mutableListOf<Uri>()
-                        mp3Files.forEach { file ->
-                            if (stopRequested.get() || Thread.currentThread().isInterrupted) throw InterruptedException("Остановлено пользователем")
-                            try {
-                                publishedUris.add(publishMp3(file))
-                                copied++
-                                append("Сохранён: " + file.name)
-                            } catch (copyError: Exception) {
-                                append("Не удалось сохранить " + file.name + ": " + copyError.message)
-                            }
-                        }
-                        val singleTrackUri = if (!normalized.isPlaylist && publishedUris.size == 1) publishedUris.first() else null
-                        runOnUiThread {
-                            lastDownloadedUri = singleTrackUri
-                            openMp3Button.visibility = if (singleTrackUri != null) View.VISIBLE else View.GONE
-                        }
-                        append("Перенесено MP3: " + copied + " из " + mp3Files.size)
+                    val remainingFiles = outputDirectory.walkTopDown()
+                        .filter { it.isFile && it.extension.equals("mp3", true) && it.absolutePath !in savedPaths }
+                        .toList()
+                    remainingFiles.forEach { file ->
+                        if (stopRequested.get() || Thread.currentThread().isInterrupted) throw InterruptedException("Остановлено пользователем")
+                        saveCompletedFile(file)
+                    }
+                    if (savedCount == 0) append("Загрузка завершилась, но готовые MP3-файлы не найдены.")
+                    else append("Всего сохранено MP3: $savedCount")
+                    val singleTrackUri = if (!normalized.isPlaylist && publishedUris.size == 1) publishedUris.first() else null
+                    runOnUiThread {
+                        lastDownloadedUri = singleTrackUri
+                        openMp3Button.visibility = if (singleTrackUri != null) View.VISIBLE else View.GONE
+                        progressBar.progress = 100
                     }
                 } else {
                     failed = true
@@ -556,7 +594,13 @@ class MainActivity : Activity() {
                 failed = true
                 append("Ошибка загрузки: " + (error.message ?: error.javaClass.simpleName))
             } finally {
+                try {
+                    if (wakeLock?.isHeld == true) wakeLock.release()
+                } catch (releaseError: Exception) {
+                    append("Не удалось освободить WakeLock: " + releaseError.message)
+                }
                 outputDirectory.deleteRecursively()
+                DownloadForegroundService.stop(this)
                 runOnUiThread {
                     downloadActive = false
                     activeDownload = null
@@ -596,7 +640,6 @@ class MainActivity : Activity() {
         try { YoutubeDL.getInstance().destroyProcessById(downloadProcessId) }
         catch (error: Exception) { append("Не удалось завершить процесс yt-dlp: " + error.message) }
         activeDownload?.cancel(true)
-        File(cacheDir, "YTDWNLD").deleteRecursively()
         progressTitle.text = "Загрузка остановлена"
         progressStatus.text = "Загрузка остановлена пользователем"
         append("Загрузка остановлена пользователем.")
@@ -723,6 +766,7 @@ class MainActivity : Activity() {
             stopRequested.set(true)
             try { YoutubeDL.getInstance().destroyProcessById(downloadProcessId) } catch (_: Exception) { }
             activeDownload?.cancel(true)
+            DownloadForegroundService.stop(this)
         }
         executor.shutdownNow()
         super.onDestroy()
