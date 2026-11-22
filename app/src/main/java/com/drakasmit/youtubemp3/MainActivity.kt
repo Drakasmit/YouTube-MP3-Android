@@ -48,7 +48,9 @@ class MainActivity : Activity() {
     private lateinit var progressTitle: TextView
     private lateinit var progressStatus: TextView
     private lateinit var progressBar: ProgressBar
+    private lateinit var openMp3Button: Button
     private lateinit var qualityButtons: List<Button>
+    private var lastDownloadedUri: Uri? = null
     private var selectedQuality = 0
     private var darkTheme = false
     private var activeDownload: Future<*>? = null
@@ -56,11 +58,16 @@ class MainActivity : Activity() {
     private val downloadProcessId = "yt_mp3_download"
     private var downloadActive = false
 
-    private val bgColor get() = if (darkTheme) Color.rgb(18,18,18) else Color.rgb(247,247,249)
-    private val cardColor get() = if (darkTheme) Color.rgb(30,30,30) else Color.WHITE
-    private val textColor get() = if (darkTheme) Color.rgb(245,245,245) else Color.rgb(30,30,34)
-    private val secondaryTextColor get() = if (darkTheme) Color.rgb(180,180,185) else Color.rgb(105,105,115)
-    private val accentColor = Color.rgb(255,68,68)
+    private val bgColor get() = Color.parseColor(if (darkTheme) "#131314" else "#F8FAFD")
+    private val cardColor get() = Color.parseColor(if (darkTheme) "#1E1F20" else "#FFFFFF")
+    private val fieldColor get() = Color.parseColor(if (darkTheme) "#282A2C" else "#F1F3F4")
+    private val textColor get() = Color.parseColor(if (darkTheme) "#E3E3E3" else "#191C20")
+    private val secondaryTextColor get() = Color.parseColor(if (darkTheme) "#C4C7C5" else "#444746")
+    private val accentColor get() = Color.parseColor(if (darkTheme) "#A8C7FA" else "#0B57D0")
+    private val accentTextColor get() = Color.parseColor(if (darkTheme) "#062E6F" else "#FFFFFF")
+    private val selectedChipColor get() = Color.parseColor(if (darkTheme) "#004A77" else "#D3E3FD")
+    private val outlineColor get() = Color.parseColor("#444746")
+    private val progressTrackColor get() = Color.parseColor(if (darkTheme) "#3C4043" else "#DADCE0")
 
     @Volatile
     private var engineReady = false
@@ -73,6 +80,7 @@ class MainActivity : Activity() {
         darkTheme = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
         applySystemBars()
         buildUi()
+        handleIncomingShare(intent)
         startButton.isEnabled = false
         setStatus("Подготовка движка yt-dlp и FFmpeg…")
         append("Инициализация yt-dlp и FFmpeg...")
@@ -140,6 +148,20 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun handleIncomingShare(source: android.content.Intent?) {
+        if (source?.action != android.content.Intent.ACTION_SEND || source.type != "text/plain") return
+        val sharedText = source.getStringExtra(android.content.Intent.EXTRA_TEXT)?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        urlInput.setText(sharedText)
+        urlInput.setSelection(urlInput.text.length)
+        setStatus("Ссылка получена через «Поделиться»")
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingShare(intent)
+    }
+
     private fun buildUi() {
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -163,14 +185,14 @@ class MainActivity : Activity() {
         urlInput = EditText(this).apply {
             isSingleLine = true; hint = "https://www.youtube.com/…"; textSize = 14f
             setTextColor(textColor); setHintTextColor(secondaryTextColor)
-            background = roundedDrawable(if (darkTheme) Color.rgb(43,43,43) else Color.rgb(245,245,247), dp(10))
+            background = roundedDrawable(fieldColor, dp(14))
             setPadding(dp(10), dp(2), dp(10), dp(2))
         }
         inputRow.addView(urlInput, LinearLayout.LayoutParams(0, dp(50), 1f))
         clearButton = smallButton("✕").apply { contentDescription = "Очистить ссылку"; setOnClickListener { urlInput.text.clear() } }
-        inputRow.addView(clearButton, LinearLayout.LayoutParams(dp(44), dp(48)).apply { leftMargin = dp(6) })
+        inputRow.addView(clearButton, LinearLayout.LayoutParams(dp(44), dp(42)).apply { leftMargin = dp(6) })
         pasteButton = smallButton("Вставить").apply { setOnClickListener { pasteFromClipboard() } }
-        inputRow.addView(pasteButton, LinearLayout.LayoutParams(-2, dp(48)).apply { leftMargin = dp(6) })
+        inputRow.addView(pasteButton, LinearLayout.LayoutParams(-2, dp(42)).apply { leftMargin = dp(6) })
         inputCard.addView(inputRow, matchWrap())
         page.addView(inputCard, matchWrap())
 
@@ -196,7 +218,7 @@ class MainActivity : Activity() {
         page.addView(archiveCheck, matchWrap())
         startButton = Button(this).apply {
             text = "Скачать MP3"; isAllCaps = false; textSize = 16f
-            setTextColor(Color.WHITE); background = roundedDrawable(accentColor, dp(14))
+            setTextColor(accentTextColor); background = roundedDrawable(accentColor, dp(50))
             setOnClickListener { if (downloadActive) stopDownload() else startDownload() }
         }
         page.addView(startButton, LinearLayout.LayoutParams(-1, dp(54)).apply { topMargin = dp(4) })
@@ -212,10 +234,24 @@ class MainActivity : Activity() {
         progressCard.addView(progressStatus, matchWrap())
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100; progress = 0
-            progressTintList = android.content.res.ColorStateList.valueOf(accentColor)
-            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(if (darkTheme) Color.rgb(65,65,65) else Color.rgb(225,225,230))
+            val track = roundedDrawable(progressTrackColor, dp(50))
+            val fill = roundedDrawable(accentColor, dp(50))
+            progressDrawable = android.graphics.drawable.LayerDrawable(arrayOf(
+                track,
+                android.graphics.drawable.ClipDrawable(fill, Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL)
+            )).apply {
+                setId(0, android.R.id.background)
+                setId(1, android.R.id.progress)
+            }
         }
         progressCard.addView(progressBar, LinearLayout.LayoutParams(-1, dp(8)))
+        openMp3Button = smallButton("Открыть MP3").apply {
+            visibility = View.GONE
+            setTextColor(accentColor)
+            background = roundedDrawable(fieldColor, dp(50))
+            setOnClickListener { lastDownloadedUri?.let { openMp3(it) } }
+        }
+        progressCard.addView(openMp3Button, LinearLayout.LayoutParams(-2, dp(40)).apply { topMargin = dp(10) })
         page.addView(progressCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
 
         logToggle = Button(this).apply {
@@ -227,7 +263,24 @@ class MainActivity : Activity() {
         logView = TextView(this).apply { textSize = 11f; setTextColor(secondaryTextColor); setPadding(dp(10), dp(10), dp(10), dp(10)) }
         logScroll = ScrollView(this).apply { visibility = View.GONE; background = roundedDrawable(cardColor, dp(10)); addView(logView) }
         page.addView(logScroll, LinearLayout.LayoutParams(-1, dp(170)).apply { topMargin = dp(6) })
-        setContentView(ScrollView(this).apply { isFillViewport = true; addView(page) })
+        val root = ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(bgColor)
+            addView(page)
+        }
+        root.setOnApplyWindowInsetsListener { view, insets ->
+            val safe = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout())
+            } else null
+            val left = safe?.left ?: insets.systemWindowInsetLeft
+            val top = safe?.top ?: insets.systemWindowInsetTop
+            val right = safe?.right ?: insets.systemWindowInsetRight
+            val bottom = safe?.bottom ?: insets.systemWindowInsetBottom
+            view.setPadding(left, top, right, bottom)
+            insets
+        }
+        setContentView(root)
+        root.requestApplyInsets()
     }
 
     private fun pasteFromClipboard() {
@@ -243,8 +296,14 @@ class MainActivity : Activity() {
         if (!::qualityButtons.isInitialized) return
         qualityButtons.forEachIndexed { index, button ->
             val selected = index == selectedQuality
-            button.background = roundedDrawable(if (selected) accentColor else cardColor, dp(11))
-            button.setTextColor(if (selected) Color.WHITE else textColor)
+            val qualityLabels = listOf("Лучшее", "320K", "256K", "192K", "128K")
+            button.text = if (selected) "✓ " + qualityLabels[index] else qualityLabels[index]
+            button.background = if (selected) roundedDrawable(selectedChipColor, dp(50)) else GradientDrawable().apply {
+                setColor(Color.TRANSPARENT)
+                cornerRadius = dp(50).toFloat()
+                setStroke(dp(1), outlineColor)
+            }
+            button.setTextColor(if (selected) (if (darkTheme) Color.WHITE else Color.rgb(4, 48, 98)) else textColor)
         }
     }
 
@@ -429,10 +488,21 @@ class MainActivity : Activity() {
                         }
                         append("Перенос готовых MP3 в общую папку Music/YTDWNLD...")
                         var copied = 0
+                        val publishedUris = mutableListOf<Uri>()
                         mp3Files.forEach { file ->
                             if (stopRequested.get() || Thread.currentThread().isInterrupted) throw InterruptedException("Остановлено пользователем")
-                            try { publishMp3(file); copied++; append("Сохранён: " + file.name) }
-                            catch (copyError: Exception) { append("Не удалось сохранить " + file.name + ": " + copyError.message) }
+                            try {
+                                publishedUris.add(publishMp3(file))
+                                copied++
+                                append("Сохранён: " + file.name)
+                            } catch (copyError: Exception) {
+                                append("Не удалось сохранить " + file.name + ": " + copyError.message)
+                            }
+                        }
+                        val singleTrackUri = if (!normalized.isPlaylist && publishedUris.size == 1) publishedUris.first() else null
+                        runOnUiThread {
+                            lastDownloadedUri = singleTrackUri
+                            openMp3Button.visibility = if (singleTrackUri != null) View.VISIBLE else View.GONE
                         }
                         append("Перенесено MP3: " + copied + " из " + mp3Files.size)
                     }
@@ -495,15 +565,24 @@ class MainActivity : Activity() {
         append("Загрузка остановлена пользователем.")
     }
 
-    private fun publishMp3(source: File) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            publishWithMediaStore(source)
-        } else {
-            publishWithLegacyStorage(source)
+    private fun publishMp3(source: File): Uri {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) publishWithMediaStore(source)
+        else publishWithLegacyStorage(source)
+    }
+
+    private fun openMp3(uri: Uri) {
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "audio/mpeg")
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        try {
+            startActivity(intent)
+        } catch (_: android.content.ActivityNotFoundException) {
+            Toast.makeText(this, "Не найдено приложение для воспроизведения MP3", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun publishWithMediaStore(source: File) {
+    private fun publishWithMediaStore(source: File): Uri {
         val values = ContentValues().apply {
             put(MediaStore.Audio.Media.DISPLAY_NAME, source.name)
             put(MediaStore.Audio.Media.MIME_TYPE, "audio/mpeg")
@@ -531,6 +610,7 @@ class MainActivity : Activity() {
                 arrayOf("audio/mpeg"),
                 null
             )
+            return uri
         } catch (error: Exception) {
             contentResolver.delete(uri, null, null)
             throw error
@@ -538,7 +618,7 @@ class MainActivity : Activity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun publishWithLegacyStorage(source: File) {
+    private fun publishWithLegacyStorage(source: File): Uri {
         val musicDirectory = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
             "YTDWNLD"
@@ -566,6 +646,7 @@ class MainActivity : Activity() {
             arrayOf("audio/mpeg"),
             null
         )
+        return Uri.fromFile(destination)
     }
 
     override fun onRequestPermissionsResult(
