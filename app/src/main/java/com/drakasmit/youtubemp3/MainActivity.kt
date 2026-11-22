@@ -1,9 +1,15 @@
 package com.drakasmit.youtubemp3
 
+import android.Manifest
 import android.app.Activity
+import android.content.ContentValues
+import android.content.pm.PackageManager
+import android.media.MediaScannerConnection
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.MediaStore
 import android.view.Gravity
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -18,6 +24,8 @@ import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -33,6 +41,7 @@ class MainActivity : Activity() {
     private var engineReady = false
 
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val storagePermissionRequest = 4102
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -158,7 +167,7 @@ class MainActivity : Activity() {
         root.addView(startButton)
 
         val folder = TextView(this).apply {
-            text = "Сохранение: Music/YouTube_MP3 (папка приложения)"
+            text = "Сохранение: Music/YTDWNLD"
             textSize = 12f
             setPadding(0, 8, 0, 12)
         }
@@ -229,6 +238,21 @@ class MainActivity : Activity() {
     }
 
     private fun startDownload() {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(
+                arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                storagePermissionRequest
+            )
+            Toast.makeText(
+                this,
+                "Разреши доступ к файлам и нажми «Скачать MP3» ещё раз.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
         val url = urlInput.text.toString().trim()
         if (url.isEmpty()) {
             Toast.makeText(this, "Вставь ссылку.", Toast.LENGTH_SHORT).show()
@@ -260,12 +284,11 @@ class MainActivity : Activity() {
         append("Тип ссылки: ${if (normalized.isPlaylist) "плейлист" else "одно видео"}")
 
         executor.execute {
+            val outputDirectory = File(cacheDir, "YTDWNLD")
             try {
-                val musicDirectory = getExternalFilesDir(Environment.DIRECTORY_MUSIC)
-                    ?: error("Папка Music недоступна")
-                val outputDirectory = File(musicDirectory, "YouTube_MP3")
-                if (!outputDirectory.exists() && !outputDirectory.mkdirs()) {
-                    error("Не удалось создать папку загрузок")
+                if (outputDirectory.exists()) outputDirectory.deleteRecursively()
+                if (!outputDirectory.mkdirs() && !outputDirectory.isDirectory) {
+                    error("Не удалось создать временную папку загрузки")
                 }
 
                 val outputTemplate =
@@ -285,10 +308,12 @@ class MainActivity : Activity() {
                 if (useArchive) {
                     request.addOption(
                         "--download-archive",
-                        File(outputDirectory, "downloaded.txt").absolutePath
+                        File(filesDir, "downloaded.txt").absolutePath
                     )
                 }
 
+                append("Временная папка: cache/YTDWNLD")
+                append("Архив истории: внутреннее хранилище приложения")
                 append("Параметры запуска yt-dlp:")
                 request.buildCommand().forEachIndexed { index, argument ->
                     append("  ${index + 1}. $argument")
@@ -310,7 +335,25 @@ class MainActivity : Activity() {
                 }
 
                 if (response.exitCode == 0) {
-                    append("Готово. Загрузка завершена.")
+                    val mp3Files = outputDirectory.walkTopDown()
+                        .filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
+                        .toList()
+                    if (mp3Files.isEmpty()) {
+                        append("Загрузка завершилась, но MP3-файлы не найдены.")
+                    } else {
+                        append("Перенос готовых MP3 в общую папку Music/YTDWNLD...")
+                        var copied = 0
+                        mp3Files.forEach { file ->
+                            try {
+                                publishMp3(file)
+                                copied++
+                                append("Сохранён: ${file.name}")
+                            } catch (copyError: Exception) {
+                                append("Не удалось сохранить ${file.name}: ${copyError.message}")
+                            }
+                        }
+                        append("Перенесено MP3: $copied из ${mp3Files.size}")
+                    }
                 } else {
                     append("yt-dlp завершился с кодом: ${response.exitCode}")
                     if (response.err.isNotBlank()) {
@@ -321,7 +364,104 @@ class MainActivity : Activity() {
             } catch (error: Exception) {
                 append("Ошибка загрузки: ${error.message ?: error.javaClass.simpleName}")
             } finally {
+                outputDirectory.deleteRecursively()
                 runOnUiThread { startButton.isEnabled = engineReady }
+            }
+        }
+    }
+
+    private fun publishMp3(source: File) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            publishWithMediaStore(source)
+        } else {
+            publishWithLegacyStorage(source)
+        }
+    }
+
+    private fun publishWithMediaStore(source: File) {
+        val values = ContentValues().apply {
+            put(MediaStore.Audio.Media.DISPLAY_NAME, source.name)
+            put(MediaStore.Audio.Media.MIME_TYPE, "audio/mpeg")
+            put(MediaStore.Audio.Media.RELATIVE_PATH, "Music/YTDWNLD")
+            put(MediaStore.Audio.Media.IS_PENDING, 1)
+        }
+
+        val uri = contentResolver.insert(
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+            values
+        ) ?: error("MediaStore не создал запись для ${source.name}")
+
+        try {
+            contentResolver.openOutputStream(uri, "w")?.use { output ->
+                FileInputStream(source).use { input -> input.copyTo(output) }
+            } ?: error("Не удалось открыть файл MediaStore для записи")
+
+            val publishValues = ContentValues().apply {
+                put(MediaStore.Audio.Media.IS_PENDING, 0)
+            }
+            contentResolver.update(uri, publishValues, null, null)
+            MediaScannerConnection.scanFile(
+                this,
+                arrayOf("/storage/emulated/0/Music/YTDWNLD/${source.name}"),
+                arrayOf("audio/mpeg"),
+                null
+            )
+        } catch (error: Exception) {
+            contentResolver.delete(uri, null, null)
+            throw error
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun publishWithLegacyStorage(source: File) {
+        val musicDirectory = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
+            "YTDWNLD"
+        )
+        if (!musicDirectory.exists() && !musicDirectory.mkdirs()) {
+            error("Не удалось создать публичную папку Music/YTDWNLD")
+        }
+
+        var destination = File(musicDirectory, source.name)
+        if (destination.exists()) {
+            val baseName = source.nameWithoutExtension
+            var suffix = 1
+            do {
+                destination = File(musicDirectory, "$baseName ($suffix).mp3")
+                suffix++
+            } while (destination.exists())
+        }
+
+        FileInputStream(source).use { input ->
+            FileOutputStream(destination).use { output -> input.copyTo(output) }
+        }
+        MediaScannerConnection.scanFile(
+            this,
+            arrayOf(destination.absolutePath),
+            arrayOf("audio/mpeg"),
+            null
+        )
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == storagePermissionRequest) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(
+                    this,
+                    "Доступ разрешён. Нажми «Скачать MP3» ещё раз.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
+                Toast.makeText(
+                    this,
+                    "Без разрешения приложение не сможет сохранить MP3 в общую папку.",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
