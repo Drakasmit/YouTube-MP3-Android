@@ -438,7 +438,7 @@ class MainActivity : Activity() {
         val quality = listOf("0", "320K", "256K", "192K", "128K").getOrElse(selectedQuality) { "0" }
         append("\\nЗапуск фоновой загрузки: $url")
         try {
-            DownloadForegroundService.startDownload(this, url, quality, archiveCheck.isChecked)
+            DownloadForegroundService.startDownload(this, url, quality, archiveCheck.isChecked, normalized.isPlaylist, normalized.isMix)
         } catch (error: Exception) {
             Toast.makeText(this, "Не удалось запустить фоновую загрузку: ${error.message}", Toast.LENGTH_LONG).show()
             append("Ошибка запуска сервиса: ${error.message}")
