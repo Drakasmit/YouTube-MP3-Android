@@ -512,8 +512,14 @@ class MainActivity : Activity() {
             try {
                 val powerManager = getSystemService(POWER_SERVICE) as PowerManager
                 wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:YtMp3Download")
-                wakeLock.acquire(60L * 60L * 1000L)
-                append("CPU WakeLock активен (максимум 60 минут).")
+                try {
+                    wakeLock?.acquire(60L * 60L * 1000L)
+                    append("CPU WakeLock активен (максимум 60 минут).")
+                } catch (wakeLockError: Exception) {
+                    wakeLock = null
+                    append("WakeLock недоступен, продолжаю загрузку без блокировки сна: " +
+                        (wakeLockError.message ?: wakeLockError.javaClass.simpleName))
+                }
                 if (outputDirectory.exists()) outputDirectory.deleteRecursively()
                 if (!outputDirectory.mkdirs() && !outputDirectory.isDirectory) error("Не удалось создать временную папку загрузки")
                 val outputTemplate = File(outputDirectory, if (normalized.isPlaylist) "%(playlist_index)s - %(title)s.%(ext)s" else "%(title)s.%(ext)s").absolutePath
