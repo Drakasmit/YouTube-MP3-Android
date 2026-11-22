@@ -1,6 +1,8 @@
 package com.drakasmit.youtubemp3
 
 import android.app.Activity
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.view.Gravity
@@ -26,6 +28,11 @@ class MainActivity : Activity() {
     private lateinit var archiveCheck: CheckBox
     private lateinit var startButton: Button
     private lateinit var logView: TextView
+    private var cookiesFile: File? = null
+
+    companion object {
+        private const val REQUEST_COOKIES = 4102
+    }
 
     @Volatile
     private var engineReady = false
@@ -43,6 +50,8 @@ class MainActivity : Activity() {
                 YtDlp.init(applicationContext)
                 engineReady = true
                 append("Движок загрузки готов.")
+                append("Версия Android-библиотеки yt-dlp: 2.0.2 (движок встроен в APK).")
+                logBundledYtDlpVersion()
                 runOnUiThread { startButton.isEnabled = true }
             } catch (error: Exception) {
                 append("Ошибка инициализации: ${error.message ?: error.javaClass.simpleName}")
@@ -111,6 +120,19 @@ class MainActivity : Activity() {
         }
         root.addView(archiveCheck)
 
+        val cookiesButton = Button(this).apply {
+            text = "Выбрать cookies.txt (необязательно)"
+            setOnClickListener {
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "text/plain"
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivityForResult(intent, REQUEST_COOKIES)
+            }
+        }
+        root.addView(cookiesButton)
+
         startButton = Button(this).apply {
             text = "Скачать MP3"
             setOnClickListener { startDownload() }
@@ -141,7 +163,9 @@ class MainActivity : Activity() {
     )
 
     private fun normalizeYouTubeUrl(raw: String): NormalizedUrl {
-        val uri = android.net.Uri.parse(raw.trim())
+        val uri = Uri.parse(raw.trim())
+        // Only the hostname is case-insensitive. Video and playlist IDs are
+        // case-sensitive and are copied without lowercasing.
         val host = uri.host?.lowercase(Locale.ROOT)
             ?: throw IllegalArgumentException("Некорректный адрес ссылки")
 
@@ -160,37 +184,82 @@ class MainActivity : Activity() {
         }
         val playlistId = uri.getQueryParameter("list")
 
-        // Mix-плейлисты RD... генерируются YouTube автоматически.
-        // Не запускаем массовую загрузку Mix: оставляем только исходное видео.
-        if (!playlistId.isNullOrBlank() && playlistId.startsWith("RD")) {
-            val mixVideoId = videoId
-                ?: playlistId.removePrefix("RD").take(11)
-            require(mixVideoId.matches(Regex("[A-Za-z0-9_-]{11}"))) {
-                "Не удалось определить исходное видео из YouTube Mix"
+        if (!videoId.isNullOrBlank()) {
+            require(videoId.matches(Regex("[A-Za-z0-9_-]{11}"))) {
+                "Некорректный ID видео"
             }
-            return NormalizedUrl(
-                "https://www.youtube.com/watch?v=$mixVideoId",
-                false
-            )
         }
 
-        // Явная ссылка на обычный плейлист.
         if (!playlistId.isNullOrBlank()) {
+            // Do not derive a video ID by slicing an RD... Mix playlist ID.
+            // Preserve the exact Mix ID and let yt-dlp interpret the playlist.
+            if (playlistId.startsWith("RD") && !videoId.isNullOrBlank()) {
+                return NormalizedUrl(
+                    "https://www.youtube.com/watch?v=$videoId",
+                    false
+                )
+            }
             return NormalizedUrl(
                 "https://www.youtube.com/playlist?list=$playlistId",
                 true
             )
         }
 
-        require(!videoId.isNullOrBlank() &&
-            videoId.matches(Regex("[A-Za-z0-9_-]{11}"))) {
-            "Не удалось определить ID видео"
+        require(!videoId.isNullOrBlank()) {
+            "В ссылке не найден ID видео или плейлиста"
         }
 
         return NormalizedUrl(
             "https://www.youtube.com/watch?v=$videoId",
             false
         )
+    }
+
+    private fun logBundledYtDlpVersion() {
+        executor.execute {
+            try {
+                append("Проверка фактической версии yt-dlp...")
+                val versionRequest = YtDlpRequest("https://www.youtube.com")
+                    .addOption("--version")
+                val versionTask = YtDlp.executeAsync(versionRequest) {
+                        _, _, line ->
+                    if (!line.isNullOrBlank()) {
+                        append("yt-dlp version: $line")
+                    }
+                }
+                val versionResult = versionTask.get()
+                if (!versionResult.isSuccess) {
+                    append("Не удалось получить версию yt-dlp через --version (код ${versionResult.exitCode}).")
+                }
+            } catch (error: Exception) {
+                append("Проверка версии не удалась: ${error.message ?: error.javaClass.simpleName}")
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_COOKIES || resultCode != RESULT_OK) return
+
+        val sourceUri = data?.data ?: return
+        try {
+            val source = contentResolver.openInputStream(sourceUri)
+                ?: error("Не удалось открыть выбранный файл")
+            source.use { input ->
+                val destination = File(filesDir, "youtube-cookies.txt")
+                destination.outputStream().use { output -> input.copyTo(output) }
+                cookiesFile = destination
+            }
+            append("Файл cookies.txt выбран и сохранён в закрытой папке приложения.")
+            Toast.makeText(this, "Cookies подключены", Toast.LENGTH_SHORT).show()
+        } catch (error: Exception) {
+            cookiesFile = null
+            Toast.makeText(
+                this,
+                "Не удалось прочитать cookies.txt: ${error.message}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     private fun startDownload() {
@@ -240,18 +309,21 @@ class MainActivity : Activity() {
                     .addOption("-x")
                     .addOption("--audio-format", "mp3")
                     .addOption("--audio-quality", quality)
-                    // Request YouTube's Android player response. This can help with
-                    // some 403 cases, but does not replace a required PO Token.
+                    // Try embedded-TV and mobile-web player clients.
+                    // YouTube may still require valid account cookies or a PO Token.
                     .addOption(
                         "--extractor-args",
-                        "youtube:player_client=android"
+                        "youtube:player_client=tv_embedded,mweb"
                     )
-                    .addOption(
-                        "--user-agent",
-                        "com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip"
-                    )
+                    .addOption("--force-ipv4")
                     .addOption("--newline")
 
+                cookiesFile?.takeIf { it.isFile && it.length() > 0 }?.let { file ->
+                    request.addOption("--cookies", file.absolutePath)
+                    append("Используется выбранный cookies.txt (содержимое не выводится в лог).")
+                }
+
+                append("Параметры: player_client=tv_embedded,mweb; IPv4 принудительно; качество=$quality")
                 if (useArchive) {
                     request.addOption(
                         "--download-archive",
