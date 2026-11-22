@@ -89,55 +89,9 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4103)
         }
         handleIncomingShare(intent)
-        startButton.isEnabled = false
-        setStatus("Подготовка движка yt-dlp и FFmpeg…")
-        append("Инициализация yt-dlp и FFmpeg...")
-
-        executor.execute {
-            try {
-                YoutubeDL.getInstance().init(applicationContext)
-                FFmpeg.getInstance().init(applicationContext)
-                append("Движки yt-dlp и FFmpeg инициализированы.")
-
-                try {
-                    append("Проверка обновлений yt-dlp (канал NIGHTLY)...")
-                    when (
-                        YoutubeDL.getInstance().updateYoutubeDL(
-                            applicationContext,
-                            YoutubeDL.UpdateChannel._NIGHTLY
-                        )
-                    ) {
-                        YoutubeDL.UpdateStatus.DONE ->
-                            append("Обновление yt-dlp: DONE")
-                        YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE ->
-                            append("Обновление yt-dlp: ALREADY_UP_TO_DATE")
-                        null ->
-                            append("Обновление yt-dlp: сервер не вернул статус.")
-                    }
-                } catch (updateError: Exception) {
-                    append(
-                        "Не удалось обновить yt-dlp: ${updateError.message ?: updateError.javaClass.simpleName}"
-                    )
-                    append("Продолжаю с уже установленной версией.")
-                }
-
-                val actualVersion = try {
-                    YoutubeDL.getInstance().version(applicationContext)
-                } catch (versionError: Exception) {
-                    append(
-                        "Не удалось определить версию yt-dlp: ${versionError.message ?: versionError.javaClass.simpleName}"
-                    )
-                    null
-                }
-                append("Фактическая версия yt-dlp: ${actualVersion ?: "не определена"}")
-
-                engineReady = true
-                append("Движок готов к загрузке.")
-                runOnUiThread { if (!downloadActive) { startButton.isEnabled = true; setStatus("Готово к загрузке") } }
-            } catch (error: Exception) {
-                append("Ошибка инициализации: ${error.message ?: error.javaClass.simpleName}")
-            }
-        }
+        startButton.isEnabled = true
+        DownloadStateManager.observe(downloadStateListener)
+        renderDownloadState(DownloadStateManager.snapshot())
     }
 
     private fun applySystemBars() {
@@ -481,196 +435,23 @@ class MainActivity : Activity() {
         val normalized = try { normalizeYouTubeUrl(url) } catch (error: Exception) {
             Toast.makeText(this, error.message ?: "Некорректная ссылка", Toast.LENGTH_LONG).show(); return
         }
-        if (!engineReady) { Toast.makeText(this, "Движок ещё не готов.", Toast.LENGTH_SHORT).show(); return }
-
         val quality = listOf("0", "320K", "256K", "192K", "128K").getOrElse(selectedQuality) { "0" }
-        val useArchive = archiveCheck.isChecked
-        stopRequested.set(false)
-        downloadActive = true
-        progressTitle.text = if (normalized.isPlaylist) "Подготовка плейлиста" else "Текущая загрузка"
-        progressBar.progress = 0
-        progressCard.visibility = View.VISIBLE
-        progressStatus.text = "Запуск загрузки…"
-        startButton.text = "Остановить"
-        startButton.background = roundedDrawable(accentColor, dp(14))
-        startButton.isEnabled = true
-        append("\nЗапуск: " + url)
-        append("Тип ссылки: " + if (normalized.isPlaylist) "плейлист" else "одно видео")
-
+        append("\\nЗапуск фоновой загрузки: $url")
         try {
-            DownloadForegroundService.start(this, "Подготовка загрузки…")
-        } catch (serviceError: Exception) {
-            reportForegroundServiceFailure(serviceError)
-        }
-        activeDownload = executor.submit {
-            val outputDirectory = File(cacheDir, "YTDWNLD")
-            var failed = false
-            var wakeLock: PowerManager.WakeLock? = null
-            val publishedUris = mutableListOf<Uri>()
-            var savedCount = 0
-            val savedPaths = mutableSetOf<String>()
-            try {
-                val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:YtMp3Download")
-                try {
-                    wakeLock?.acquire(60L * 60L * 1000L)
-                    append("CPU WakeLock активен (максимум 60 минут).")
-                } catch (wakeLockError: Exception) {
-                    wakeLock = null
-                    append("WakeLock недоступен, продолжаю загрузку без блокировки сна: " +
-                        (wakeLockError.message ?: wakeLockError.javaClass.simpleName))
-                }
-                if (outputDirectory.exists()) outputDirectory.deleteRecursively()
-                if (!outputDirectory.mkdirs() && !outputDirectory.isDirectory) error("Не удалось создать временную папку загрузки")
-                val outputTemplate = File(outputDirectory, if (normalized.isPlaylist) "%(playlist_index)s - %(title)s.%(ext)s" else "%(title)s.%(ext)s").absolutePath
-                val request = YoutubeDLRequest(normalized.value)
-                    .addOption("-o", outputTemplate)
-                    .addOption("--ignore-errors")
-                    .addOption("--no-overwrites")
-                    .addOption(if (normalized.isPlaylist) "--yes-playlist" else "--no-playlist")
-                    .addOption("-x").addOption("--audio-format", "mp3")
-                    .addOption("--audio-quality", quality).addOption("--newline")
-                    .addOption("--postprocessor-args", "ffmpeg:-threads 4 -loglevel error")
-                if (normalized.isMix) {
-                    request.addOption("--playlist-end", "25")
-                    append("Загрузка персонального микса YouTube (лимит: 25 треков)...")
-                }
-                if (useArchive) request.addOption("--download-archive", File(filesDir, "downloaded.txt").absolutePath)
-                append("Временная папка: cache/YTDWNLD")
-                append("Архив истории: внутреннее хранилище приложения")
-                append("Параметры запуска yt-dlp:")
-                request.buildCommand().forEachIndexed { index, argument -> append("  " + (index + 1) + ". " + argument) }
-
-                var pendingConvertedFile: File? = null
-                fun saveCompletedFile(file: File?) {
-                    if (file == null || !file.exists() || !file.isFile ||
-                        !file.extension.equals("mp3", true) ||
-                        file.absolutePath in savedPaths || stopRequested.get()
-                    ) return
-                    try {
-                        val uri = publishMp3(file)
-                        publishedUris.add(uri)
-                        savedPaths.add(file.absolutePath)
-                        savedCount++
-                        file.delete()
-                        append("Сохранён сразу после конвертации ($savedCount): " + file.name)
-                        runOnUiThread {
-                            progressTitle.text = "Сохранено треков: $savedCount"
-                            progressStatus.text = "Файл перенесён в Music/YTDWNLD"
-                            if (!normalized.isPlaylist) {
-                                lastDownloadedUri = uri
-                                openMp3Button.visibility = View.VISIBLE
-                            }
-                        }
-                    } catch (copyError: Exception) {
-                        append("Не удалось сохранить " + file.name + ": " + copyError.message)
-                    }
-                }
-
-                val response = YoutubeDL.getInstance().execute(request, downloadProcessId, false) { progress, etaInSeconds, line ->
-                    if (line.isNotBlank()) {
-                        append(String.format(Locale.US, "%.1f%% | ETA %ds | %s", progress, etaInSeconds, line))
-                        updateProgress(progress, etaInSeconds.toLong(), line)
-                        try {
-                            DownloadForegroundService.update(this, line.take(110))
-                        } catch (serviceError: Exception) {
-                            reportForegroundServiceFailure(serviceError)
-                        }
-                        if (line.contains("[ExtractAudio] Destination:", true)) {
-                            val destination = line.substringAfter("Destination:", "").trim().trim('"')
-                            if (destination.isNotEmpty()) pendingConvertedFile = File(destination)
-                        } else if (line.contains("Deleting original file", true)) {
-                            // yt-dlp emits this only after FFmpeg has completed the extraction.
-                            saveCompletedFile(pendingConvertedFile)
-                            pendingConvertedFile = null
-                        } else if (Regex("""Downloading item\s+\d+\s+of\s+\d+""", RegexOption.IGNORE_CASE).containsMatchIn(line)) {
-                            // The next playlist item starts only after the previous post-processing step.
-                            saveCompletedFile(pendingConvertedFile)
-                            pendingConvertedFile = null
-                        }
-                    }
-                }
-                if (response.exitCode == 0) saveCompletedFile(pendingConvertedFile)
-                if (stopRequested.get() || Thread.currentThread().isInterrupted) throw InterruptedException("Остановлено пользователем")
-
-                if (response.exitCode == 0) {
-                    val remainingFiles = outputDirectory.walkTopDown()
-                        .filter { it.isFile && it.extension.equals("mp3", true) && it.absolutePath !in savedPaths }
-                        .toList()
-                    remainingFiles.forEach { file ->
-                        if (stopRequested.get() || Thread.currentThread().isInterrupted) throw InterruptedException("Остановлено пользователем")
-                        saveCompletedFile(file)
-                    }
-                    if (savedCount == 0) append("Загрузка завершилась, но готовые MP3-файлы не найдены.")
-                    else append("Всего сохранено MP3: $savedCount")
-                    val singleTrackUri = if (!normalized.isPlaylist && publishedUris.size == 1) publishedUris.first() else null
-                    runOnUiThread {
-                        lastDownloadedUri = singleTrackUri
-                        openMp3Button.visibility = if (singleTrackUri != null) View.VISIBLE else View.GONE
-                        progressBar.progress = 100
-                    }
-                } else {
-                    failed = true
-                    append("yt-dlp завершился с кодом: " + response.exitCode)
-                    if (response.err.isNotBlank()) { append("Сообщения об ошибках yt-dlp:"); append(response.err.takeLast(12000)) }
-                    throw IllegalStateException("yt-dlp завершился с кодом " + response.exitCode)
-                }
-            } catch (interrupted: InterruptedException) {
-                Thread.currentThread().interrupt()
-                if (!stopRequested.get()) { failed = true; append("Задача прервана: " + interrupted.message) }
-            } catch (error: Exception) {
-                failed = true
-                append("Ошибка загрузки: " + (error.message ?: error.javaClass.simpleName))
-            } finally {
-                try {
-                    if (wakeLock?.isHeld == true) wakeLock.release()
-                } catch (releaseError: Exception) {
-                    append("Не удалось освободить WakeLock: " + releaseError.message)
-                }
-                outputDirectory.deleteRecursively()
-                DownloadForegroundService.stop(this)
-                runOnUiThread {
-                    downloadActive = false
-                    activeDownload = null
-                    startButton.text = "Скачать MP3"
-                    startButton.background = roundedDrawable(accentColor, dp(14))
-                    startButton.isEnabled = engineReady
-                    if (stopRequested.get()) {
-                        progressBar.progress = 0
-                        progressTitle.text = "Загрузка остановлена"
-                        progressStatus.text = "Загрузка остановлена пользователем"
-                        progressCard.visibility = View.VISIBLE
-                    } else if (failed) {
-                        progressTitle.text = "Ошибка загрузки"
-                        progressStatus.text = "Произошла ошибка. Причина указана в техническом логе."
-                        progressStatus.setTextColor(accentColor)
-                        progressCard.visibility = View.VISIBLE
-                        setLogExpanded(true)
-                    } else {
-                        progressTitle.text = "Готово"
-                        progressStatus.text = "Загрузка и сохранение завершены"
-                        progressBar.progress = 100
-                        progressCard.visibility = View.VISIBLE
-                    }
-                }
-            }
+            DownloadForegroundService.startDownload(this, url, quality, archiveCheck.isChecked)
+        } catch (error: Exception) {
+            Toast.makeText(this, "Не удалось запустить фоновую загрузку: ${error.message}", Toast.LENGTH_LONG).show()
+            append("Ошибка запуска сервиса: ${error.message}")
         }
     }
 
     private fun stopDownload() {
-        if (!downloadActive) return
-        stopRequested.set(true)
-        startButton.isEnabled = false
-        progressTitle.text = "Остановка загрузки…"
-        progressStatus.text = "Завершаю процесс и очищаю временные файлы"
-        progressBar.progress = 0
-        append("Запрошена остановка загрузки пользователем.")
-        try { YoutubeDL.getInstance().destroyProcessById(downloadProcessId) }
-        catch (error: Exception) { append("Не удалось завершить процесс yt-dlp: " + error.message) }
-        activeDownload?.cancel(true)
-        progressTitle.text = "Загрузка остановлена"
-        progressStatus.text = "Загрузка остановлена пользователем"
-        append("Загрузка остановлена пользователем.")
+        append("Отправлена команда остановки фоновой загрузки.")
+        try {
+            DownloadForegroundService.stopDownload(this)
+        } catch (error: Exception) {
+            append("Не удалось отправить команду остановки: ${error.message}")
+        }
     }
 
     private fun publishMp3(source: File): Uri {
@@ -789,14 +570,35 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onDestroy() {
-        if (downloadActive) {
-            stopRequested.set(true)
-            try { YoutubeDL.getInstance().destroyProcessById(downloadProcessId) } catch (_: Exception) { }
-            activeDownload?.cancel(true)
-            DownloadForegroundService.stop(this)
+    private val downloadStateListener: (DownloadUiState) -> Unit = { state ->
+        runOnUiThread { renderDownloadState(state) }
+    }
+
+    private fun renderDownloadState(state: DownloadUiState) {
+        if (!::startButton.isInitialized) return
+        downloadActive = state.isDownloading
+        progressCard.visibility = if (state.isDownloading || state.progress > 0 || state.status != "Готово к загрузке") View.VISIBLE else View.GONE
+        progressBar.progress = state.progress
+        progressStatus.text = buildString {
+            append(state.status)
+            if (state.eta >= 0 && state.isDownloading) append(" • ETA ${state.eta}s")
         }
-        executor.shutdownNow()
+        if (state.track.isNotEmpty()) progressTitle.text = state.track
+        else if (!state.isDownloading && state.status == "Загрузка завершена") progressTitle.text = "Готово"
+        else if (!state.isDownloading && state.status == "Загрузка остановлена") progressTitle.text = "Загрузка остановлена"
+        startButton.text = if (state.isDownloading) "Остановить" else "Скачать MP3"
+        startButton.isEnabled = true
+        val uri = state.lastDownloadedUri?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        lastDownloadedUri = uri
+        openMp3Button.visibility = if (uri != null) View.VISIBLE else View.GONE
+        if (::logView.isInitialized && logView.text.toString() != state.log) {
+            logView.text = state.log
+            if (::logScroll.isInitialized && logScroll.visibility == View.VISIBLE) logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+        }
+    }
+
+    override fun onDestroy() {
+        DownloadStateManager.remove(downloadStateListener)
         super.onDestroy()
     }
 }
