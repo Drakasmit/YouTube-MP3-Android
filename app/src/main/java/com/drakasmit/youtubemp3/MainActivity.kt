@@ -555,14 +555,14 @@ class MainActivity : Activity() {
                             // yt-dlp emits this only after FFmpeg has completed the extraction.
                             saveCompletedFile(pendingConvertedFile)
                             pendingConvertedFile = null
-                        } else if (Regex("""Downloading item\\s+\\d+\\s+of\\s+\\d+""", RegexOption.IGNORE_CASE).containsMatchIn(line)) {
+                        } else if (Regex("""Downloading item\s+\d+\s+of\s+\d+""", RegexOption.IGNORE_CASE).containsMatchIn(line)) {
                             // The next playlist item starts only after the previous post-processing step.
                             saveCompletedFile(pendingConvertedFile)
                             pendingConvertedFile = null
                         }
                     }
                 }
-                saveCompletedFile(pendingConvertedFile)
+                if (response.exitCode == 0) saveCompletedFile(pendingConvertedFile)
                 if (stopRequested.get() || Thread.currentThread().isInterrupted) throw InterruptedException("Остановлено пользователем")
 
                 if (response.exitCode == 0) {
