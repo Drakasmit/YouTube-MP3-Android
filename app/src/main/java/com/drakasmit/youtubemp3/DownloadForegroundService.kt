@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.IBinder
 import android.os.PowerManager
+import android.media.MediaScannerConnection
 import android.provider.MediaStore
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
@@ -131,7 +132,7 @@ class DownloadForegroundService : Service() {
             val response = YoutubeDL.getInstance().execute(request, PROCESS_ID, false) { progress, eta, line ->
                 if (line.isNotBlank()) {
                     val percent = progress.toInt().coerceIn(0, 100)
-                    val item = Regex("""Downloading item\\s+(\\d+)\\s+of\\s+(\\d+)""", RegexOption.IGNORE_CASE).find(line)
+                    val item = Regex("""Downloading item\s+(\\d+)\s+of\s+(\\d+)""", RegexOption.IGNORE_CASE).find(line)
                     val trackText = item?.let { "Трек ${it.groupValues[1]} из ${it.groupValues[2]}" }.orEmpty()
                     val stage = when {
                         line.contains("ffmpeg", true) || line.contains("converting", true) || line.contains("ExtractAudio", true) -> "Конвертация в MP3…"
@@ -144,7 +145,7 @@ class DownloadForegroundService : Service() {
                     if (line.contains("[ExtractAudio] Destination:", true)) {
                         pendingFile = File(line.substringAfter("Destination:", "").trim().trim('"'))
                     } else if (line.contains("Deleting original file", true) ||
-                        Regex("""Downloading item\\s+\\d+\\s+of\\s+\\d+""", RegexOption.IGNORE_CASE).containsMatchIn(line)) {
+                        Regex("""Downloading item\s+\\d+\s+of\s+\\d+""", RegexOption.IGNORE_CASE).containsMatchIn(line)) {
                         saveFile(pendingFile)
                         pendingFile = null
                     }
@@ -216,13 +217,12 @@ class DownloadForegroundService : Service() {
     private data class NormalizedUrl(val value: String, val isPlaylist: Boolean, val isMix: Boolean = false)
 
     private fun publishMp3(source: File): Uri {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return publishLegacyMp3(source)
         val values = ContentValues().apply {
             put(MediaStore.Audio.Media.DISPLAY_NAME, source.name)
             put(MediaStore.Audio.Media.MIME_TYPE, "audio/mpeg")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Audio.Media.RELATIVE_PATH, "Music/YTDWNLD")
-                put(MediaStore.Audio.Media.IS_PENDING, 1)
-            }
+            put(MediaStore.Audio.Media.RELATIVE_PATH, "Music/YTDWNLD")
+            put(MediaStore.Audio.Media.IS_PENDING, 1)
         }
         val uri = contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
             ?: error("MediaStore не создал запись для ${source.name}")
@@ -230,15 +230,28 @@ class DownloadForegroundService : Service() {
             contentResolver.openOutputStream(uri, "w")?.use { output ->
                 FileInputStream(source).use { input -> input.copyTo(output) }
             } ?: error("Не удалось открыть файл MediaStore")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val done = ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) }
-                contentResolver.update(uri, done, null, null)
-            }
+            val done = ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) }
+            contentResolver.update(uri, done, null, null)
             return uri
         } catch (e: Exception) {
             contentResolver.delete(uri, null, null)
             throw e
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun publishLegacyMp3(source: File): Uri {
+        val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "YTDWNLD")
+        if (!directory.exists() && !directory.mkdirs()) error("Не удалось создать Music/YTDWNLD")
+        var destination = File(directory, source.name)
+        var suffix = 1
+        while (destination.exists()) {
+            destination = File(directory, "${source.nameWithoutExtension} ($suffix).mp3")
+            suffix++
+        }
+        FileInputStream(source).use { input -> destination.outputStream().use { output -> input.copyTo(output) } }
+        MediaScannerConnection.scanFile(this, arrayOf(destination.absolutePath), arrayOf("audio/mpeg"), null)
+        return Uri.fromFile(destination)
     }
 
     private fun stopDownload() {
