@@ -11,10 +11,28 @@ import android.os.Build
 import android.os.IBinder
 
 class DownloadForegroundService : Service() {
-    private var foregroundStarted = false
 
     override fun onCreate() {
         super.onCreate()
+        createNotificationChannel()
+        // A foreground service must publish its notification immediately.
+        startForegroundCompat(buildNotification(DEFAULT_STATUS))
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Promote/update before inspecting the action or any other branch.
+        val status = intent?.getStringExtra(EXTRA_STATUS) ?: DEFAULT_STATUS
+        startForegroundCompat(buildNotification(status))
+
+        if (intent?.action == ACTION_STOP) {
+            stopForegroundCompat()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -24,34 +42,30 @@ class DownloadForegroundService : Service() {
                 description = "Статус загрузки и конвертации аудио"
                 setShowBadge(false)
             }
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(channel)
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopForeground(true)
-            stopSelf(startId)
-            return START_NOT_STICKY
-        }
-
-        val status = intent?.getStringExtra(EXTRA_STATUS) ?: "Загрузка и конвертация MP3…"
-        val notification = buildNotification(status)
-        if (!foregroundStarted) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
-            foregroundStarted = true
+    private fun startForegroundCompat(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
         } else {
-            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification)
+            startForeground(NOTIFICATION_ID, notification)
         }
-        return START_NOT_STICKY
+    }
+
+    private fun stopForegroundCompat() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
     }
 
     private fun buildNotification(status: String): Notification {
@@ -71,6 +85,11 @@ class DownloadForegroundService : Service() {
             .build()
     }
 
+    override fun onDestroy() {
+        stopForegroundCompat()
+        super.onDestroy()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
@@ -78,6 +97,7 @@ class DownloadForegroundService : Service() {
         private const val NOTIFICATION_ID = 7314
         private const val ACTION_STOP = "com.drakasmit.youtubemp3.STOP_DOWNLOAD_SERVICE"
         private const val EXTRA_STATUS = "download_status"
+        private const val DEFAULT_STATUS = "Загрузка и конвертация MP3…"
 
         fun start(context: Context, status: String) {
             val intent = Intent(context, DownloadForegroundService::class.java)
