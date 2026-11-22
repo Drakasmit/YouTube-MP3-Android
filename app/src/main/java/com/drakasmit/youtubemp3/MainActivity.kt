@@ -240,6 +240,16 @@ class MainActivity : Activity() {
                     .addOption("-x")
                     .addOption("--audio-format", "mp3")
                     .addOption("--audio-quality", quality)
+                    // Request YouTube's Android player response. This can help with
+                    // some 403 cases, but does not replace a required PO Token.
+                    .addOption(
+                        "--extractor-args",
+                        "youtube:player_client=android"
+                    )
+                    .addOption(
+                        "--user-agent",
+                        "com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip"
+                    )
                     .addOption("--newline")
 
                 if (useArchive) {
