@@ -381,7 +381,8 @@ class MainActivity : Activity() {
 
     private data class NormalizedUrl(
         val value: String,
-        val isPlaylist: Boolean
+        val isPlaylist: Boolean,
+        val isMix: Boolean = false
     )
 
     private fun normalizeYouTubeUrl(raw: String): NormalizedUrl {
@@ -413,24 +414,29 @@ class MainActivity : Activity() {
         if (!playlistId.isNullOrBlank()) {
             val isPersonalRadioMix =
                 playlistId.startsWith("RD") &&
-                playlistId.length == 13 &&
                 !playlistId.startsWith("RDCLAK") &&
                 !playlistId.startsWith("RDMM")
 
             if (isPersonalRadioMix) {
-                // Personal radio mix IDs contain the source video ID after the "RD" prefix.
-                val mixVideoId = playlistId.substring(2)
+                // A personal Mix is parsed from its watch URL, not the blocked /playlist endpoint.
+                val mixVideoId = videoId ?: run {
+                    require(playlistId.length >= 13) {
+                        "В ID персонального микса не найден ID исходного видео"
+                    }
+                    playlistId.substring(2, 13)
+                }
                 require(mixVideoId.matches(Regex("[A-Za-z0-9_-]{11}"))) {
                     "Некорректный ID видео в автомиксе"
                 }
-                append("Обнаружен персональный автомикс YouTube (RD): загружается исходное видео $mixVideoId")
+                append("Обнаружен персональный автомикс YouTube: исходное видео $mixVideoId")
                 return NormalizedUrl(
-                    "https://www.youtube.com/watch?v=$mixVideoId",
-                    false
+                    "https://www.youtube.com/watch?v=$mixVideoId&list=$playlistId",
+                    true,
+                    true
                 )
             }
 
-            // Any other list= parameter represents a playlist, even when v= is also present.
+            // Static playlists, including RDCLAK and RDMM, are downloaded in full.
             return NormalizedUrl(
                 "https://www.youtube.com/playlist?list=$playlistId",
                 true
@@ -490,6 +496,10 @@ class MainActivity : Activity() {
                     .addOption(if (normalized.isPlaylist) "--yes-playlist" else "--no-playlist")
                     .addOption("-x").addOption("--audio-format", "mp3")
                     .addOption("--audio-quality", quality).addOption("--newline")
+                if (normalized.isMix) {
+                    request.addOption("--playlist-end", "25")
+                    append("Загрузка персонального микса YouTube (лимит: 25 треков)...")
+                }
                 if (useArchive) request.addOption("--download-archive", File(filesDir, "downloaded.txt").absolutePath)
                 append("Временная папка: cache/YTDWNLD")
                 append("Архив истории: внутреннее хранилище приложения")
