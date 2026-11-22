@@ -1,8 +1,6 @@
 package com.drakasmit.youtubemp3
 
 import android.app.Activity
-import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.view.Gravity
@@ -15,6 +13,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import android.net.Uri
 import dev.ffmpegkit_maintained.ytdlp.YtDlp
 import dev.ffmpegkit_maintained.ytdlp.YtDlpRequest
 import java.io.File
@@ -28,11 +27,6 @@ class MainActivity : Activity() {
     private lateinit var archiveCheck: CheckBox
     private lateinit var startButton: Button
     private lateinit var logView: TextView
-    private var cookiesFile: File? = null
-
-    companion object {
-        private const val REQUEST_COOKIES = 4102
-    }
 
     @Volatile
     private var engineReady = false
@@ -120,18 +114,6 @@ class MainActivity : Activity() {
         }
         root.addView(archiveCheck)
 
-        val cookiesButton = Button(this).apply {
-            text = "Выбрать cookies.txt (необязательно)"
-            setOnClickListener {
-                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "text/plain"
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                startActivityForResult(intent, REQUEST_COOKIES)
-            }
-        }
-        root.addView(cookiesButton)
 
         startButton = Button(this).apply {
             text = "Скачать MP3"
@@ -237,30 +219,6 @@ class MainActivity : Activity() {
         }
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_COOKIES || resultCode != RESULT_OK) return
-
-        val sourceUri = data?.data ?: return
-        try {
-            val source = contentResolver.openInputStream(sourceUri)
-                ?: error("Не удалось открыть выбранный файл")
-            source.use { input ->
-                val destination = File(filesDir, "youtube-cookies.txt")
-                destination.outputStream().use { output -> input.copyTo(output) }
-                cookiesFile = destination
-            }
-            append("Файл cookies.txt выбран и сохранён в закрытой папке приложения.")
-            Toast.makeText(this, "Cookies подключены", Toast.LENGTH_SHORT).show()
-        } catch (error: Exception) {
-            cookiesFile = null
-            Toast.makeText(
-                this,
-                "Не удалось прочитать cookies.txt: ${error.message}",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
 
     private fun startDownload() {
         val url = urlInput.text.toString().trim()
@@ -309,21 +267,9 @@ class MainActivity : Activity() {
                     .addOption("-x")
                     .addOption("--audio-format", "mp3")
                     .addOption("--audio-quality", quality)
-                    // Try embedded-TV and mobile-web player clients.
-                    // YouTube may still require valid account cookies or a PO Token.
-                    .addOption(
-                        "--extractor-args",
-                        "youtube:player_client=tv_embedded,mweb"
-                    )
-                    .addOption("--force-ipv4")
                     .addOption("--newline")
 
-                cookiesFile?.takeIf { it.isFile && it.length() > 0 }?.let { file ->
-                    request.addOption("--cookies", file.absolutePath)
-                    append("Используется выбранный cookies.txt (содержимое не выводится в лог).")
-                }
-
-                append("Параметры: player_client=tv_embedded,mweb; IPv4 принудительно; качество=$quality")
+                append("Параметры загрузки: качество=$quality")
                 if (useArchive) {
                     request.addOption(
                         "--download-archive",
