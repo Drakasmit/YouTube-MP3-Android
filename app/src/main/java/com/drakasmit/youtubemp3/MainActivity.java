@@ -4,13 +4,15 @@ import android.app.Activity;
 import android.os.Bundle;
 import android.os.Environment;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.*;
 import java.io.File;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import dev.ffmpegkit.maintained.ytdlp.YtDlp;
-import dev.ffmpegkit.maintained.ytdlp.YtDlpRequest;
+import java.util.concurrent.Future;
+
+import dev.ffmpegkit_maintained.ytdlp.YtDlp;
+import dev.ffmpegkit_maintained.ytdlp.YtDlpRequest;
+import dev.ffmpegkit_maintained.ytdlp.YtDlpResponse;
 
 public class MainActivity extends Activity {
     private EditText urlInput;
@@ -18,15 +20,20 @@ public class MainActivity extends Activity {
     private CheckBox archiveCheck;
     private Button startButton;
     private TextView logView;
+    private volatile boolean engineReady = false;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         buildUi();
+        startButton.setEnabled(false);
+        append("Инициализация движка загрузки...");
         executor.execute(() -> {
             try {
                 YtDlp.init(getApplicationContext());
+                engineReady = true;
                 append("Движок загрузки готов.");
+                runOnUiThread(() -> startButton.setEnabled(true));
             } catch (Exception e) {
                 append("Ошибка инициализации: " + e.getMessage());
             }
@@ -47,7 +54,7 @@ public class MainActivity extends Activity {
         root.addView(title, new LinearLayout.LayoutParams(-1, -2));
 
         TextView hint = new TextView(this);
-        hint.setText("Ссылка на видео, канал или плейлист");
+        hint.setText("Ссылка на видео или плейлист, который ты вправе сохранять");
         hint.setTextSize(14);
         hint.setPadding(0, 24, 0, 8);
         root.addView(hint);
@@ -91,7 +98,7 @@ public class MainActivity extends Activity {
         root.addView(startButton);
 
         TextView folder = new TextView(this);
-        folder.setText("Сохранение: папка Music/YouTube_MP3 внутри хранилища приложения");
+        folder.setText("Сохранение: Music/YouTube_MP3 (папка приложения)");
         folder.setTextSize(12);
         folder.setPadding(0, 8, 0, 12);
         root.addView(folder);
@@ -114,6 +121,10 @@ public class MainActivity extends Activity {
         }
         if (!(url.startsWith("https://") || url.startsWith("http://"))) {
             Toast.makeText(this, "Проверь ссылку.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!engineReady) {
+            Toast.makeText(this, "Движок ещё не готов.", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -142,17 +153,26 @@ public class MainActivity extends Activity {
                     .addOption("--newline");
 
                 if (useArchive) {
-                    request.addOption("--download-archive", new File(output, "downloaded.txt").getAbsolutePath());
+                    request.addOption("--download-archive",
+                        new File(output, "downloaded.txt").getAbsolutePath());
                 }
 
-                YtDlp.executeAsync(request, (progress, eta, line) -> {
-                    if (line != null && !line.isEmpty()) append(line);
+                Future<YtDlpResponse> task = YtDlp.executeAsync(request, (progress, eta, line) -> {
+                    if (line != null && !line.isEmpty()) {
+                        append(String.format(java.util.Locale.US, "%.1f%% | ETA %ds | %s",
+                            progress, eta, line));
+                    }
                 });
-                append("Команда передана движку загрузки.");
+                YtDlpResponse result = task.get();
+                if (result.isSuccess()) {
+                    append("Готово. Загрузка завершена.");
+                } else {
+                    append("Загрузка завершилась с кодом ошибки: " + result.getExitCode());
+                }
             } catch (Exception e) {
-                append("Ошибка: " + e.getMessage());
+                append("Ошибка загрузки: " + e.getMessage());
             } finally {
-                runOnUiThread(() -> startButton.setEnabled(true));
+                runOnUiThread(() -> startButton.setEnabled(engineReady));
             }
         });
     }
