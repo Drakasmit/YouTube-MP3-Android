@@ -40,6 +40,7 @@ class DownloadForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundCompat(buildNotification("Загрузка и конвертация MP3…", DownloadStateManager.snapshot().progress))
         val action = intent?.action
         if (action == ACTION_STOP_DOWNLOAD) {
             stopDownload()
@@ -59,6 +60,7 @@ class DownloadForegroundService : Service() {
             }
             stopRequested.set(false)
             DownloadStateManager.update { it.copy(isDownloading = true, progress = 0, status = "Запуск загрузки…", track = "", eta = -1L) }
+            updateNotification("Подготовка yt-dlp и FFmpeg…", 0)
             task = executor.submit { runDownload(url, quality, archive, isPlaylist, isMix) }
         }
         return START_NOT_STICKY
