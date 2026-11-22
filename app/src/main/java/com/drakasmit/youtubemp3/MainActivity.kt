@@ -256,7 +256,7 @@ class MainActivity : Activity() {
         val useArchive = archiveCheck.isChecked
 
         startButton.isEnabled = false
-        append("\\nЗапуск: $url")
+        append("\nЗапуск: $url")
         append("Тип ссылки: ${if (normalized.isPlaylist) "плейлист" else "одно видео"}")
 
         executor.execute {
@@ -328,7 +328,7 @@ class MainActivity : Activity() {
 
     private fun append(line: String) {
         runOnUiThread {
-            if (::logView.isInitialized) logView.append("$line\\n")
+            if (::logView.isInitialized) logView.append("$line\n")
         }
     }
 
